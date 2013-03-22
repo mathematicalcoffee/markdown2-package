@@ -1,0 +1,5 @@
+*.roxygen
+*.Rcheck
+*.Rd
+
+bin/*

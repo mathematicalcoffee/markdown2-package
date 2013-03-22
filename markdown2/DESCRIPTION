@@ -1,0 +1,11 @@
+Package: markdown2
+Type: Package
+Title: Converts markdown to various other formats.
+Version: 0.1
+Date: 2013-03-21
+Author: Amy Chan
+Maintainer: Amy Chan <mathematical.coffee@gmail.com>
+Description: Converts text from markdown syntax to various other formats.
+Allows custom conversions to be made.
+Depends: markdown, XML
+License: What license is it under?
