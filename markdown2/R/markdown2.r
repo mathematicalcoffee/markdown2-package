@@ -1,3 +1,4 @@
+# http://cran.r-project.org/doc/manuals/R-exts.html
 #' Convert markdown to some to some other format, with custom rules.
 #'
 #' @param file
@@ -19,7 +20,7 @@
 markdown2 <- function(file, output, text,
                       renderer.options=NULL,                       # passed to markdown
                       extensions=getOption('markdown.extensions'), # passed to markdown
-                      profile='HTML', ...) {
+                      profile='Rd', ...) {
 
     html <- renderMarkdown(file=file,
                            text=text,
@@ -33,151 +34,65 @@ markdown2 <- function(file, output, text,
     # use handlers=list(...) # function (node) {}
     # todo: xmlEventParse?
     # now fire events
+
+    XML2(html, profile)
 }
 
-# NOTE: do I just define my own print.XMLNode?
+XMLTree2 <- function(xml.text, profile) {
+    tree <- xmlRoot(xmlTreeParse(xml.text, asText=T, ignoreBlanks=T, trim=F, useInternalNodes=T))
+    # "If internal nodes are used and the internal tree returned directly, all the nodes are
+    # returned as-is and no attempt to trim white space, remove "empty" nodes, etc.
+    # is done."
+    # Remove "empty" nodes
+    # TODO: DON'T WANT THIS TO BE TRIMMED:
+    # A <bold>strange</bold> <em>new</em> world.
+    # this space -----------^
+    # So just filter all things that do not expect text to remove the whitespace???? TODO
+    # only top-level?
+    # nodes <- xmlElementsByTagName(tree, 'text', recursive=F)
+    # hmmm.....
+    # empty <- grep('^\\s+$', sapply(nodes, xmlValue))
+    # removeNodes(nodes[empty])
+    # ^-------------- the above removes **too much**
 
-# xmlEventParse: doesn't create nodes unless you use the branches argument which
-#                doesn't work with nested stuff.
-# xmlParse:
-
-# this one parses in order of occurence
-# BAH xm
-x <- xmlParse(txt, asText=T, useInternalNodes=T,
-              list(ol = function(x, attrs) {
-                       cat('ol\n')
-                   },
-                   li = function(li, attrs) {
-                       cat('li\n')
-                       recover()
-                   })
-              )
-
-# Need something that uses the lookups better...
-# todo: heading wants the contents until the next heading too...
-header <- function(node) {
-    lvl <- switch(node$name, h1=1, h2=2, h3=3, h4=4, h5=5, h6=6, NA)
-    profile$heading(xmlValue(node), level=lvl, node=node)
-}
-table.cell <- function(node) {
-    profile$table.cell(xmlValue(node), is.heading=(node$name == 'th'), node=node)
+    flatten.node(tree, getHandlers(profile))
 }
 
-passthrough <- function(node, ...) {
-    unlist(xmlChildren(node), use.names=F)
-}
+# TODO: .profile ?
+#' Recursively flattens an XMLInternalNode out to a string, using the provided
+#' handlers.
+#' @param node - node to flatten
+#' @param handlers - list of handlers, take in a vector of strings, node and index and returns a string.
+#' @param index - the index of the current child in its parent.
+#' @param ... - futureproofing
+#' @internal
+flatten.node <- function(node, .handlers, index=-1, ...) {
+    # TODO: later XMLTextNode should be removed (only use useInternalNodes=T)
+    if (inherits(node, 'XMLInternalTextNode') || inherits(node, 'XMLTextNode')) {
+        xmlValue(node)
+    } else {
+        ch <- xmlChildren(node)
+        strings <- sapply(seq_along(ch),
+                          function (i) {
+                              flatten.node(ch[[i]], .handlers, index=i)
+                          })
 
-## TODO: do I really want to modify a *copy* of the tree so subsequent handlers are guaranteed
-## to get nodes only?
-# function node, text ? function(text, node)?
-myHandlersToXMLHandlers <- function(profile) {
-    # xmlValue(node)
-
-    handlers <- list(
-        # lists
-        # nested stuff is converted before unnested stuff
-        ul=function(node) {
-            # by now `li` has converted xmlChildren(node) to text.
-            children <- unlist(xmlChildren(node), use.names=F)
-            profile$list.unordered(children)
-        },
-
-        ol=function(node) {
-            children <- unlist(xmlChildren(node), use.names=F)
-            profile$list.unordered(children)
-        },
-
-        dl=function(node) {
-            # TODO
-        },
-
-        a=function(node) {
-            caption <- xmlValue(node)
-            if (!length(caption) || !nchar(caption)) {
-                caption <- NULL
-            }
-            url <- xmlGetAttr(node, 'href')
-            profile$link(url, caption=caption, node=node)
-        },
-
-        # NOTE: this covers <pre><code> as well as <code>
-        code=function(node) {
-            language <- xmlGetAttr(node, 'class')
-            parent <- xmlParent(node)
-            if (parent && parent$name == 'pre') {
-                # <pre><code>: BLOCK CODE
-                profile$code.block(xmlValue(node), language=language, node=node)
+        tag <- xmlName(node)
+        handler <- .handlers[[tag]]
+        if (!is.null(handler)) {
+            handler(strings, node=node, index=index, ...)
+        } else {
+            # assume collapse with profile[[]]?
+            x <- collapse(strings)
+            featName <- XML2Me[[tag]]
+            if (!is.null(featName) && !is.null(profile[[featName]])) {
+                profile[[featName]](x, node=node, index=index, ...)
             } else {
-                # INLINE CODE
-                profile$code.inline(xmlValue(node), language=language, node=node)
+                # do nothing, just return the flattened string
+                x
             }
-        },
-
-        pre=function(node) {
-            if (is.character(xmlChildren(node)[[1]])) {
-            } else {
-                # pre all on its own...
-                profile$code.block(xmlValue(node), language=language, node=node)
-            }
-            if (is.character
-            # code block (language)
-        },
-
-        h1=header,
-        h2=header,
-        h3=header,
-        h4=header,
-        h5=header,
-        h6=header,
-
-        img=function(node) {
-            # caption, alt, link, ...
-        },
-
-        # TODO: supply coordinates with these: table, th, tr, td
-        tr=, td=function(node) {
         }
-
-        td=function(node) {
-        },
-        table=
-
-        # blockquote, li, br, p, code(inline), strong, italic, strikethrough
-        # TOFIX: tr, td, th
-        # TODO: superscript? (the thing under the superscript)
-        # TODO: li(text, index)?
-        startElement=function(node) {
-            tag <- node$name
-            pname <- XMLMapping2MyHandlers[[tag]]
-            if (profile[[pname]]) {
-                profile[[pname]](xmlValue(node), node=node)
-            } else {
-                # unrecognised tags just return xmlValue(node) (?)
-                # thead, tbody, ...
-                xmlValue(node)
-            }
-        },
-
-    # tables
-    table='table',
-    th=,   # text, col
-    thead=, # <-- ?
-    tbody=, # <-- ?
-    tr=, # row
-    td=, # row, col
-
-    sup='superscript', # <-- TODO: do *not* want this? (if inside math environment?)
-        # all others just return xmlValue
-        # TODO: ignore all others?
-        # UPTO
-    )
-
-    # restrict to where profile$[asdf] exists.
-    handlersInProfile <- names(profile)
-    handlersInXML <- MyHandlers2XMLMapping[handlersInProfile]
-    handlers <- handlers[handlersInXML]
-
-    handlers
+    }
 }
 
 # Math (Ajax): \( \) (inline); $$ and \[ \] (block)
@@ -187,17 +102,19 @@ myHandlersToXMLHandlers <- function(profile) {
 #
 #
 # TODO: HTML ENTITIES
-MyHandlers2XMLMapping=list(
+Me2XML=list(
 )
-XMLMapping2MyHandlers = list(
+XML2Me = list(
     # NOTE: mathjax is left as \(\) and \[ \], so no HTML element is made for it
     # TODO: math, form, figure, fieldset, script, noscript, style, iframe, ins
     # ENTITY REPLACEMENT
-    p='pagaraph',
+    p='paragraph',
     br='linebreak',
     blockquote='quote',
 
     dl='list.definition',
+    dt='list.definition.title',
+    dd='list.definition.definition',
     ul='list.unordered',
     ol='list.ordered',
     li='list.item',    # <-- ???
@@ -223,17 +140,18 @@ XMLMapping2MyHandlers = list(
     td='table.cell',
     th='table.cell', # isHeading=TRUE
 
+    b='bold',
+    bold='bold',
     strong='bold',
     em='italic',
 
     del='strikethrough',
     sup='superscript', # <-- TODO: do *not* want this? (if inside math environment?)
 
-    img='image', # <--
-
+    img='image' # <--
 )
 
-
+# STUBS TODO LATER
 getProfile <- function(profile) {
     .Profiles[[profile]]
 }
@@ -245,13 +163,13 @@ registerProfile <- function(name, handlers) {
 
 .Profiles <- list()
 
-
-registerProfile(HTML, list())
-
-# http://cran.r-project.org/doc/manuals/R-exts.html
-
+#' @internal
+collapse <- function(..., sep='', collapse='') {
+    paste(..., sep='', collapse='')
+}
 
 # \name{contents}{optionalcontents}
+#' @internal
 latexTag <- function(name, contents, optionalcontents=NULL) {
     if (!is.null(optionalcontents)) {
         return(paste0('\\', name, '{', contents, '}{', optionalcontents, '}'))
@@ -259,175 +177,402 @@ latexTag <- function(name, contents, optionalcontents=NULL) {
     return(paste0('\\', name, '{', contents, '}'))
 }
 
+#' @internal
 is.internal.link <- function(url) {
     # if the url is =dest or package: or package:page or a function name
     # then that is the URL too
     grepl('^(=[\\w.-]+|[\\w.-]+:[\\w.-]*|[\\w.]+)$', url, perl=T)
 }
-# TODO: provide parse tree?
-# PROFILES
-# NULL = "leave as-is (as in the source markdown)"
-# TODO: *MUST* provide a way to access context (in the parse tree)?
-RdProfile <- list(
-                  # STRUCTURING ELEMENTS
-                  # x: the text in the paragraph
-                  paragraph=function (x) {
-                    x
-                  },
 
-                  linebreak=function () {
-                      # \cr
-                      '\\cr'
-                  },
+# --- handlers (generic/helpers)
+handler.list <- function(list.type.profile) {
+    function(node) {
+        ch <- xmlChildren(node) # still XML nodes
+        children <- sapply(seq_along(ch),
+                           function (i) {
+                               profile$list.item(flatten(ch[i]), i, list.type=list.type.profile, node=node)
+                           })
+        children <- unname(children)
+        profile[[list.type.profile]](children, node=node)
+    }
+}
 
-                  # Note: should roxygen comments really have internal headings?!
-                  # TODO: what about the *contents* of that heading?
-                  # e.g. "# Usage" should be converted to "\usage{ .... }" ?
-                  # (this will allow Rd files to be written ENTIRELY in markdown
-                  #  rather than roxygen->markdown)
-                  heading=function(text, contents, level) {
+# UPTO UPTO (converts tag-level to feature-level functions)
+# TODO: MUST REMOVE NODES THAT ARE "\n        " (e.g. in the <li>)
+getHandlers <- function(profile) {
+    handlers <- list()
+    handlers$a <- function (x, node, ...) {
+        caption <- collapse(x)
+        url <- xmlGetAttr(node, 'href')
+        profile$link(url, caption=caption, node=node, ...)
+    }
+    handlers$li <- function(x, node, index, ...) {
+        x <- collapse(x) # the text for the list item
+        parent <- xmlParent(node)
+        list.type <- 'ul' # default
+        if (is.null(parent)) {
+            # Note: since this is from markdown the lists are always well-formed
+            # so I wouldn't expect to get a <li> at root level
+            warning("List item found not in a list")
+        } else {
+            list.type <- xmlName(parent)
+        }
+        list.type <- XML2Me[[list.type]]
 
-                      tagName <- switch(tolower(text),
-                                        usage='usage',
-                                        description='description',
-                                        seealso=,
-                                        `see also`='seealso',
-                                        arguments='arguments',  # TODO: \describe context
-                                        value='value',          # TODO: \describe context
-                                        references='references',
-                                        note=,
-                                        notes='note',
-                                        authors=,
-                                        author='author',        # TODO: one per author
-                                        keywords=,
-                                        keyword='keyword',        # TODO: one per keyword
-                                        format='format',
-                                        source='source',
-                                        example=,
-                                        examples='examples',
-                                        'unknown')
+        # list.type is 'list.unordered', 'list.ordered', ...
+        profile$list.item(x, list.type=list.type, node=node, index=index, ...)
+    }
+    handlers$ul <- function(...) {
+        # pass through without collapsing
+        profile$list.unordered(...)
+    }
+    handlers$ol <- function(...) {
+        # pass through without collapsing
+        profile$list.ordered(...)
+    }
+    handlers
+}
 
-                      if (tagName == 'unknown') {
-                          if (level == 1) {
-                              return(latexTag('section', text, contents))
-                          } else {
-                              return(latexTag('subsection', text, contents))
-                          }
-                      }
-                      latexTag(tagName, contents)
-                  },
+## TODO: do I really want to modify a *copy* of the tree so subsequent handlers are guaranteed
+## to get nodes only?
+# function node, text ? function(text, node)?
+profile2XMLHandlers <- function(profile) {
+    handlers <- list()
 
-                  quote=function () {
-                      # TODO
-                  },
+    # blockquote, li, br, p, code(inline), strong, italic, strikethrough
+    # TOFIX: tr, td, th
+    # TODO: superscript? (the thing under the superscript)
+    # TODO: li(text, index)?
+    handlers$startElement <- function(node) {
+        tag <- node$name
+        pname <- XML2Me[[tag]]
+        txt <- flatten(node)
 
-                  # TODO: [`asdf`](fdsa)
-                  #  turns into link(code(asdf), fdsa)
-                  #  turns into \link{\code{}}
-                  # but we want \code{\link{}}
+        # If the handler exists in the profile, we use that with the flattened text.
+        # Otherwise, if the tag name is one known to us, we flatten it.
+        # If it is unknown to us, we pass it through (????)
+        # (For example: dt, dd, ... vs thead, tbody, ... ?)
+        if (profile[[pname]]) {
+            profile[[pname]](flatten(node), node=node)
+        } else {
+            toCharacterVector(node)
+        }
+    }
 
-                  # LINKS
-                  # \link{name}                 [name](name)
-                  # \link[=dest]{name}          [name](=dest)
-                  # \link[package]{name}        [name](package:)
-                  # \link[package:page]{name}   [name](package:page)
-                  # Note: for internal links, there are NO CAPTIONS.
-                  # (But if the user specifies [asdf]() we will treat as internal)
-                  link=function(url, caption=NULL) {
-                      # If they did [asdf]() copy over the caption to the url
-                      if (!nchar(url) && !is.null(caption) && nchar(caption))
-                          url <- caption
+    # -- Special cases --
+    # lists. They fire profile$list.item(text, index, list.type, node) on
+    # each child.
+    # To do this (since we can't do xmlParent) we explicitly only flatten
+    # handlers$li and then fire profile$list.item manually from the parent list.
+    # preserve all li as nodes until the
+    # TODO: OH, but lists within lists?
+    # BIG TODO: If I have <li>a <bold>bold</bold> move,
+    #           the li node will NOT be a proper XML node: bits of it will be replaced
+    # Options:
+    # 1. don't provide ancestry information
+    # 2. don't provide the node
+    # 3. don't replace each node with a string, but replace the node's *value* or text with
+    #    a string, and then do some sort of xmlText(recursive=T) at the end <-- TRY THIS
+    #
+    # So - *don't* pass in the node?
+    handlers$li <- identity
+    handlers$ul <- handler.list('list.unordered')
+    handlers$ol <- handler.list('list.ordered')
+    # definition lists need to know about dd and dt
+    handlers$dd <- identity
+    handlers$dt <- identity
+    handlers$dl <- function (node) {
+        # UPTO
+    }
 
-                      if (!is.internal.link(url)) {
-                          # external link
-                          if (!is.null(caption) && nchar(caption)) {
-                              return(latexTag('href', url, caption))
-                          } else {
-                              return(latexTag('url', url))
-                          }
-                      } else {
-                          tName <- 'link'
-                          if (name != url) {
-                              tName <- paste0(tName, '[', url, ']')
-                          }
-                          return(latexTag(tname, caption))
-                      }
-                  },
+    # link
+    handlers$a <- function(node) {
+        caption <- flatten(node)
+        url <- xmlGetAttr(node, 'href')
+        profile$link(url, caption=caption, node=node)
+    }
 
-                  # TODO: is there markdown for email?
-                  email=function(email) {
-                      latexTag('email', email)
-                  },
+    # code. NOTE:
+    # pre-parse the XML? replace <pre><code> with <blockcode> # <-- this requires two parses!
+    # - code *blocks* are <pre><code>.
+    # - inline code is <code>
+    # - preformatted text is <pre>
+    handlers$code <- function(node) {
+        language <- xmlGetAttr(node, 'class')
+        # TODO: cannot get parent unless we useInternalNodes=T which doesn't seem
+        # to work (the .Call returns NULL, probably beclause I'm replacing internal
+        # nodes with R strings)
+        # parent <- xmlParent(node)
+        if (parent && parent$name == 'pre') {
+            # <pre><code>: BLOCK CODE
+            profile$code.block(xmlValue(node), language=language, node=node)
+        } else {
+            # INLINE CODE
+            profile$code.inline(xmlValue(node), language=language, node=node)
+        }
+    }
 
-                  # LISTS
-                  # TODO: \value{...} is a \describe environment already
-                  list.unordered=function(items) {
-                      items <- paste('\\item', items, collapse='\n')
-                      latexTag('itemize', items)
-                  },
+    # TODO
+    handlers$pre <- function(node) {
+        if (is.character(xmlChildren(node)[[1]])) {
+        } else {
+            # pre all on its own...
+            profile$code.block(xmlValue(node), language=language, node=node)
+        }
+        # code block (language)
+    }
 
-                  list.ordered=function(items) {
-                      items <- paste('\\item', items, collapse='\n')
-                      latexTag('enumerate', items)
-                  },
+    # headings...bit of repetition to make things faster
+    handlers$h1 <- function (node) {
+        profile$heading(flatten(node), level=1, node=node)
+    }
+    handlers$h2 <- function (node) {
+        profile$heading(flatten(node), level=2, node=node)
+    }
+    handlers$h3 <- function (node) {
+        profile$heading(flatten(node), level=3, node=node)
+    }
+    handlers$h4 <- function (node) {
+        profile$heading(flatten(node), level=4, node=node)
+    }
+    handlers$h5 <- function (node) {
+        profile$heading(flatten(node), level=5, node=node)
+    }
+    handlers$h6 <- function (node) {
+        profile$heading(flatten(node), level=6, node=node)
+    }
 
-                  list.describe=function(definitions, items) {
-                      items <- paste0('\\item{', definitions, '}{', items, '}', collapse='\n')
-                      latexTag('describe', items)
-                  },
+    # images
+    handlers$img <- function (node) {
+        caption <- xmlGetAttr(node, 'alt', default=xmlGetAttr(node, 'title'))
+        url <- xmlGetAttr(node, 'src')
+        profile$image(url, caption=caption, node=node)
+    }
 
-                  # TABLES
-                  # cells is a matrix row/cols and rownames/colnames (?)
-                  table=function(cells) {
-                      nr <- nrow(cells)
-                      nc <- ncol(cells)
+    # tables
+    # TODO: tr, td, th supply coordinates
+    # (for now: td/th should flatten)
+    # TODO: could suppress tr/td (ie do nothing) and then handle in table?
+    # restrict to where profile$[asdf] exists.
+    handlersInProfile <- names(profile)
+    handlersInXML <- Me2XML[handlersInProfile]
+    handlers <- handlers[handlersInXML]
 
-                      if (rownames(cells) != as.character(1:nr)) {
-                          cells <- cbind(rownames(cells), cells)
-                      }
-                      if (colnames(cells) != as.character(1:nr)) {
-                          cells <- rbind(colnames(cells), cells)
-                      }
+    handlers
+}
 
-                      rows <- apply(x, 1, paste, collapse=' \\tab ')
-                      contents <- paste(rows, collapse='\\cr\n')
+# TODO: provide signatures?!
+# formals(myHandler) <- .supportedFeatures('bold')?
+# TODO: rename 'x' to 'text'?
+# .signatures are for reference
+.defaultSig <- alist(x=, node=, index=, ...=)
 
-                      alignment <- paste(rep('l', ncol(cells), collapse=''))
+.signatures <- list(
+    # Headings, paragraphs
+    paragraph=.defaultSig,
+    heading=alist(x=, level=, node=, index=, ...=), # TODO: contents to next heading
+    linebreak=alist(node=, index=, ...=)
 
-                      latexTag('tabular', alignment, contents)
-                  },
-                  # TODO: table.row, table.cell, ... ?
+    # Text decoration
+    bold=.defaultSig,
+    italic=.defaultSig,
+    strikethrough=.defaultSig,
 
-                  # MARKING TEXT
-                  code.block=function(x, language) {
-                      latexTag('preformatted', x)
-                  },
+    # Code
+    code.inline=.defaultSig,
+    code.block=alist(x=, language=, node=, index=, ...=),
 
-                  # TODO \code{link} but markdown is [`asdf`]{} ?
-                  code.inline=function (x) {
-                      latexTag('code', x)
-                  },
+    # lists
+    list.item=alist(x=, list.type=, node=, index=, ...=),
+    list.unordered=alist(items=, node=, index=, ...=),
+    list.ordered=alist(items=, node=, index=, ...=),
 
-                  bold=function(x) {
-                      latexTag('strong', x)
-                  },
+    # definition list
+    list.definition=alist(terms=, definitions=, node=, index=, ...=)
+    list.definition.title=.defaultSig, # TODO: provide the corresponding title/text?
+                                       # list.definition.item=alist(term=,text=???)
+    list.definition.text=.defaultSig,
 
-                  italic=function(x) {,
-                      latexTag('emph', x)
-                  },
+    # quotes
+    quote.block=.defaultSig,  # <blockquote><p>x</p></blockquote> (TODO: get rid of that <p> so paragraph handler isn't confused?)
+    # quote.inline=.defaultSig, # TODO: are there inline quotes?
 
-                  # MATHS
-                  maths.inline=function(latex, ascii=NULL) {
-                      latexTag('eqn', latex, ascii)
-                  },
+    # links
+    link=alist(url=, caption=, node=, index=, ...=),
+    email=.defaultSig,
+    image=alist(url=, caption=, node=, index=, ...=),
 
-                  maths.display=function(latex, ascii=NULL) {
-                      latexTag('eqn', latex, ascii)
-                  },
+    # maths
+    maths.inline=alist(latex=, ascii=NULL, node=, index=, ...=),
+    maths.display=alist(latex=, ascii=NULL, node=, index=, ...=),
 
-                  # IMAGES
-                  # TODO: can do \figure{filename}{options: string}
-                  image=function(url, caption=NULL) {
-                      latexTag('figure', url, caption)
-                  }
+    # tables
+    # TODO: rows/cells get is.in.header (/is.in.body)?
+    # TODO: rows/cells/tables get alignment?
+    # TODO: table gets a cells.head and cells.body argument?
+    table.cell=alist(x=, is.heading=, in.tbody=, node=, index=, ...=),
+    table.row=alist(cells=, in.tbody=, node=, index=, ...=),
+    table=alist(rows=, alignment=NULL, node=, index=, ...=)
 )
+.supportedFeatures <- names(.signatures)
+# TODO: SOME NODES ARE node-only (no text) and we MUST filter out all child nodes of spaces
+# e.g. <ul> or <table> otherwise we end up with more children than intended.
+
+# TODO: \pkg for linking to a package, \email, check if we can do \strikethorugh in the terminal
+#' Generates the Rd profile, should be cached after that.
+#' @internal
+.makeRdProfile <- function() {
+    prof <- list()
+    # skip quotes
+
+    # ----- Headings/paragraphs ----- #
+    # skip paragraph
+    prof$heading <- function(x, level, ...) {
+        # TODO: GET CONTENTS (getSibling...) AND CANCEL THE PARSING OF THE
+        # SIBLING WHEN WE ARE DONE
+        tagName <- switch(tolower(text),
+                          usage='usage',
+                          description='description',
+                          seealso=,
+                          `see also`='seealso',
+                          arguments='arguments',  # TODO: \describe context
+                          value='value',          # TODO: \describe context
+                          references='references',
+                          note=,
+                          notes='note',
+                          authors=,
+                          author='author',        # TODO: one per author
+                          keywords=,
+                          keyword='keyword',        # TODO: one per keyword
+                          format='format',
+                          source='source',
+                          example=,
+                          examples='examples',
+                          'unknown')
+  
+        #if (tagName == 'unknown') {
+        #    if (level == 1) {
+        #        return(latexTag('section', text, contents))
+        #    } else {
+        #        return(latexTag('subsection', text, contents))
+        #    }
+        #}
+        #latexTag(tagName, contents)
+        # TODO: NEED TO ALSO INCLUDE CONTENTS HERE
+        x
+    }
+
+    prof$linebreak <- function(...) {
+        '\\cr'
+    }
+
+    # ----- text formatting ----- #
+    prof$bold <- function(x, ...) {
+        latexTag('strong', x)
+    }
+    prof$italic <- function(x, ...) {
+        latexTag('emph', x)
+    }
+    # skip strikethrough
+
+    # ----- code ----- #
+    prof$code.inline <- function(x, ...) {
+        latexTag('code', x)
+    }
+
+    prof$code.block <- function(x) {
+        latexTag('preformatted', x) # TODO: preformatted(code) ?
+    }
+
+    # ----- ordered/unordered lists ----- #
+    prof$list.item <- function(x, list.type, node, index, ...) {
+        paste('\\item', x)
+    }
+    prof$list.unordered <- function(items, ...) {
+        latexTag('itemize', collapse(items))
+    }
+    prof$list.ordered <- function(items, ...) {
+        latexTag('enumerate', collapse(items))
+    }
+
+    # ----- definition lists ----- #
+    prof$list.definition <- function(terms, definitions, ...) {
+        items <- paste0('\\item{', definitions, '}{', items, '}')
+        latexTag('describe', items)
+    }
+
+    prof$list.definition.title <- function(x, ...) {
+        latexTag('strong', x) # bold the title
+    }
+    # skip list.definition.text
+
+    # ----- links ----- #
+    # \link{name}                 [name](name)
+    # \link[=dest]{name}          [name](=dest)
+    # \link[package]{name}        [name](package:)
+    # \link[package:page]{name}   [name](package:page)
+    # Note: for internal links, there are NO CAPTIONS.
+    # (But if the user specifies [asdf]() we will treat as internal)
+    prof$link <- function(url, caption=NULL, ...) {
+        # If they did [asdf]() copy over the caption to the url
+        if (!nchar(url) && !is.null(caption) && nchar(caption))
+            url <- caption
+
+        if (!is.internal.link(url)) {
+            # external link
+            if (!is.null(caption) && nchar(caption)) {
+                latexTag('href', url, caption)
+            } else {
+                latexTag('url', url)
+            }
+        } else {
+            tName <- 'link'
+            if (caption != url) {
+                tName <- paste0(tName, '[', url, ']')
+            }
+            latexTag(tname, caption)
+        }
+    }
+
+    prof$email <- function(x, ...) {
+        latexTag('email', x)
+    }
+
+    prof$image <- function(url, caption=NULL, ...) {
+        latexTag('figure', url, caption)
+    }
+
+    # ----- maths ----- #
+    prof$maths.inline <- function(latex, ascii=NULL, ...) {
+        latexTag('eqn', latex, ascii)
+    }
+    prof$maths.display <- prof$maths.inline # TODO check that it's display
+
+    # ----- tables ----- #
+    # TODO: does `table` get table.rows or individual cells or does it depend
+    # on what you return in the handlers?
+    prof$table.cell <- function(x, is.heading, in.tbody, ...) {
+        # bold it if it's in the heading....
+        if (is.heading)
+            x <- latexTag('strong', x)
+        x
+    }
+    prof$table.row <- function(cells, in.tbody, ...) {
+        collapse(cells, collapse=' \\tab ')
+    }
+    prof$table <- function(rows, ncols, alignment=NULL, ...) {
+        # BIG TODO: NEED THE NUMBER OF COLUMNS
+        # assume x is rows...
+        flat <- collapse(rows, sep=' \\cr')
+
+        if (is.null(alignment)) {
+            alignment <- 'l'
+        }
+        alignment <- collapse(rep(alignment, length.out=ncols))
+        latexTag('tabular', alignment, flat)
+    }
+
+    prof
+}
+
+RdProfile <- .makeRdProfile()
