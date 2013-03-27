@@ -72,6 +72,9 @@ flatten.node <- function(node, .handlers, index=-1, ...) {
         xmlValue(node)
     } else {
         ch <- xmlChildren(node)
+        # TODO: also provide the contents to the next heading?
+        # BIG TODO: must provide a way for a node to indicate that another
+        #           node should be skipped?
         strings <- sapply(seq_along(ch),
                           function (i) {
                               flatten.node(ch[[i]], .handlers, index=i)
@@ -197,10 +200,196 @@ handler.list <- function(list.type.profile) {
     }
 }
 
+#' checks that `node` is the *only* child node its parent, optionally specifying
+#' that the parent node's name be a particular value and that we ignore text
+#' node siblings that consist of whitespace only.
+isOnlyChild <- function (node, parentName=NULL, index=NULL, ignore.white.space=T) {
+    # find all siblings
+
+    parent <- xmlParent(node)
+    # Easy case: parent name doesn't match and we require it to
+    if (!is.null(parentName) && (is.null(parent) || xmlName(parent) != parentName)) {
+        return(FALSE)
+    }
+
+    # Easy case: index is known and ignore.white.space=F and index != 1
+    if (!ignore.white.space && !is.null(index) && index != 1) {
+        return(FALSE)
+    }
+
+    # Get all children
+    children <- NULL
+    if (!is.null(parent)) {
+        children <- xmlChildren(parent)
+    } else {
+        # multiple root nodes with no parent...(probably won't happen for me?)
+        ch <- node
+        # find siblings before
+        while (!is.null((ch <- getSibling(ch, after=F)))) {
+            children <- c(ch, children)
+        }
+        children <- c(children, node)
+        # find siblings after
+        ch <- node
+        while (!is.null((ch <- getSibling(ch, after=T)))) {
+            children <- c(children, ch)
+        }
+    }
+    n <- length(children)
+
+    # Easy case: if n == 1, then we are the only child
+    if (n == 1) {
+        return(TRUE)
+    }
+
+    # Easy case: if !ignore.white.space, test if nchildren == 1
+    if (!ignore.white.space) {
+        return(n == 1)
+    }
+
+    # If we got this far ignore.white.space is TRUE and n > 1
+    for (ch in children) {
+        if (ch == node) next
+        # if any of the children (that isn't the original) has non-space value
+        # we fail
+        if (!grepl('^\\s+$', xmlValue(ch)))
+            return(FALSE)
+    }
+    return(TRUE)
+}
+
 # UPTO UPTO (converts tag-level to feature-level functions)
 # TODO: MUST REMOVE NODES THAT ARE "\n        " (e.g. in the <li>)
-getHandlers <- function(profile) {
+#' This takes a profile and provides a list of functions mapping tag names
+#' to features (e.g. 'p' to 'paragraph').
+#'
+#' TODO: can provide a defaultHandler?
+#' The signature of each handler is `(x, node, index, ...)`, where:
+#' 
+#' * `x` is a vector of strings being the processed contents of the child nodes
+#'       (including text and HTML) of the current handler.
+#'       Each element of `x` has already been run through its appropriate
+#'       profile handler for the feature it represents.
+#' * `node` is a XMLInternalNode representing the node for the current tag.
+#'          You cannot modify it but you can query it with things like [](XML:xmlParent).
+#' * `index` is the index (1-based) of this node within its parent.
+#'           This node is the `index`th child of the parent (including text nodes
+#'           which may consist of whitespace only (!))
+#' * `...` for future-proofing.
+#'
+#' It is expected that the tag handler will call the appropriate profile/feature
+#' handler (the expected signatures for these is in [.signatures]()).
+#' 
+#' In particular, you should *always* pass named arguments `node` and `index`
+#' to the corresponding profile/feature handler, along with `...` (for future-proofing).
+#'
+#' If a tag is encountered that does NOT have a handler, ....
+#' we see if XML2Me has a direct translation of tag to feature, and call that
+#' feature's handler in the profile with `x`, `node`, `index`, and `...`.
+#'
+#' TODO: a customHandlers/overrideHandlers arg?
+getHandlers <- function(profile, TODOmappings, TODOextras) {
     handlers <- list()
+
+    handlers$FOR_ALL <- function() {}
+
+    # Map h1, ..., h6 to profile$heading
+    # TODO: also provide the contents to the next heading?
+    for (i in 1:6) {
+        hi <- paste0('h', i)
+        handlers[[hi]] <- function(x, node, index, ...) {}
+        body(handlers[[hi]]) <- bquote(
+            profile$heading(collapse(x), level=.(i), node=node, index=index, ...)
+        )
+    }
+
+    # the <code> block could be <pre><code> in which case we fire the code.block
+    # handler, or it could be use <code> so we fire the code.inline handler,
+    # or if it's just <pre> we fire the preformatted handler.
+    # At the moment to avoid firing twice we skip <pre><code> in the code handler
+    # and fire it from the <pre> handler.
+    #
+    # TODO: can I handle in <code> and then REMOVE the parent <pre> or will that break?
+    # Hmm..Need a way for the child to indicate that the parent should not
+    # be handled, perhaps. OR at least some way to mark nodes as not
+    #
+    # ****************************
+    # BIG BIG BIG BIG BIG TODO BREAKING NEWS: I CAN DO xmlValue() <- ASDF
+    # as long as I don't do it in xmlTreeParse!!!!!!!!!
+    # Why don't we set an attribute ".markdown2-package='skip'" ?
+    # Or could just carry around a local variable, a vector skip=c(node, node, ...)
+    # ****************************
+    #
+    # That will break.
+    handlers$code <- function(x, node, index, ...) {
+        # 1. check if it's <pre><code>. If so, fire profile$code.block
+        if (isOnlyChild(node, parentName='pre', index=index)) {
+            # skip, we'll trigger profile$code.block in handlers$pre.
+            ''
+        }
+        language <- xmlGetAttr(node, 'class')
+
+        # fire code.inline.
+        profile$code.inline(collapse(x), language=language, node=node, index=index, ...)
+    }
+
+    handlers$pre <- function(node, ...) {
+        language <- xmlGetAttr(node, 'class')
+        profile$code.block(collapse(x), language=language, node=node, index=index, ...)
+        # TODO: remove profile$preformatted (unless I want to distinguish
+        # between preformatted.block and preformatted.code)
+
+        # NOTE TODO: isn't profile$preformattted the same feature as profile$code.block?
+        # Otherwise I'd need a profile$preformatted.block and profile$preformatted.inline?
+        # BIG TODO: will REMOVE preformatted.
+        profile
+            ch <- xmlChildren(node)
+        # TODO: filter out blank text nodes from the <pre>
+        #   V---- i.e. only node-child is a '<code>' with only spaces surrounding it (?)
+        if (length(ch) == 1) {
+                    profile$code.block(...)
+            } else {
+                        profile$preformatted(...) # NOTE BIGTODO isn't \preformatted{} just code.block?
+                }
+    }
+    
+
+    # Code
+    code.inline=.defaultSig,
+    code.block=alist(x=, language=, node=, index=, ...=),
+
+    # lists
+    list.item=alist(x=, list.type=, node=, index=, ...=),
+    list.unordered=alist(items=, node=, index=, ...=),
+    list.ordered=alist(items=, node=, index=, ...=),
+
+    # definition list
+    list.definition=alist(terms=, definitions=, node=, index=, ...=),
+    list.definition.title=.defaultSig, # TODO: provide the corresponding title/text?
+                                       # list.definition.item=alist(term=,text=???)
+    list.definition.text=.defaultSig,
+
+    # quotes
+    quote.block=.defaultSig,  # <blockquote><p>x</p></blockquote> (TODO: get rid of that <p> so paragraph handler isn't confused?)
+    # quote.inline=.defaultSig, # TODO: are there inline quotes?
+
+    # links
+    link=alist(url=, caption=, node=, index=, ...=),
+    email=.defaultSig,
+    image=alist(url=, caption=, node=, index=, ...=),
+
+    # maths
+    maths.inline=alist(latex=, ascii=NULL, node=, index=, ...=),
+    maths.display=alist(latex=, ascii=NULL, node=, index=, ...=),
+
+    # tables
+    # TODO: rows/cells get is.in.header (/is.in.body)?
+    # TODO: rows/cells/tables get alignment?
+    # TODO: table gets a cells.head and cells.body argument?
+    table.cell=alist(x=, is.heading=, in.tbody=, node=, index=, ...=),
+    table.row=alist(cells=, in.tbody=, node=, index=, ...=),
+    table=alist(rows=, alignment=NULL, node=, index=, ...=)
+)
     handlers$a <- function (x, node, ...) {
         caption <- collapse(x)
         url <- xmlGetAttr(node, 'href')
@@ -222,6 +411,9 @@ getHandlers <- function(profile) {
         # list.type is 'list.unordered', 'list.ordered', ...
         profile$list.item(x, list.type=list.type, node=node, index=index, ...)
     }
+
+    # pass through without collapsing
+    passthroughs <- c('ul', 'ol')
     handlers$ul <- function(...) {
         # pass through without collapsing
         profile$list.unordered(...)
@@ -322,25 +514,6 @@ profile2XMLHandlers <- function(profile) {
         # code block (language)
     }
 
-    # headings...bit of repetition to make things faster
-    handlers$h1 <- function (node) {
-        profile$heading(flatten(node), level=1, node=node)
-    }
-    handlers$h2 <- function (node) {
-        profile$heading(flatten(node), level=2, node=node)
-    }
-    handlers$h3 <- function (node) {
-        profile$heading(flatten(node), level=3, node=node)
-    }
-    handlers$h4 <- function (node) {
-        profile$heading(flatten(node), level=4, node=node)
-    }
-    handlers$h5 <- function (node) {
-        profile$heading(flatten(node), level=5, node=node)
-    }
-    handlers$h6 <- function (node) {
-        profile$heading(flatten(node), level=6, node=node)
-    }
 
     # images
     handlers$img <- function (node) {
@@ -371,7 +544,7 @@ profile2XMLHandlers <- function(profile) {
     # Headings, paragraphs
     paragraph=.defaultSig,
     heading=alist(x=, level=, node=, index=, ...=), # TODO: contents to next heading
-    linebreak=alist(node=, index=, ...=)
+    linebreak=alist(node=, index=, ...=),
 
     # Text decoration
     bold=.defaultSig,
@@ -388,7 +561,7 @@ profile2XMLHandlers <- function(profile) {
     list.ordered=alist(items=, node=, index=, ...=),
 
     # definition list
-    list.definition=alist(terms=, definitions=, node=, index=, ...=)
+    list.definition=alist(terms=, definitions=, node=, index=, ...=),
     list.definition.title=.defaultSig, # TODO: provide the corresponding title/text?
                                        # list.definition.item=alist(term=,text=???)
     list.definition.text=.defaultSig,
